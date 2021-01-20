@@ -3,7 +3,9 @@ package aws
 import (
 	"fmt"
 
+	"github.com/cloudskiff/driftctl/pkg/alerter"
 	"github.com/cloudskiff/driftctl/pkg/parallel"
+
 	awsdeserializer "github.com/cloudskiff/driftctl/pkg/resource/aws/deserializer"
 
 	"github.com/aws/aws-sdk-go/service/iam"
@@ -22,16 +24,27 @@ type IamRolePolicySupplier struct {
 	deserializer deserializer.CTYDeserializer
 	client       iamiface.IAMAPI
 	runner       *terraform.ParallelResourceReader
+	alerter      *alerter.Alerter
 }
 
-func NewIamRolePolicySupplier(runner *parallel.ParallelRunner, client iamiface.IAMAPI) *IamRolePolicySupplier {
-	return &IamRolePolicySupplier{terraform.Provider(terraform.AWS), awsdeserializer.NewIamRolePolicyDeserializer(), client, terraform.NewParallelResourceReader(runner)}
+func NewIamRolePolicySupplier(runner *parallel.ParallelRunner, client iamiface.IAMAPI, alerter *alerter.Alerter) *IamRolePolicySupplier {
+	return &IamRolePolicySupplier{
+		terraform.Provider(terraform.AWS),
+		awsdeserializer.NewIamRolePolicyDeserializer(),
+		client,
+		terraform.NewParallelResourceReader(runner),
+		alerter,
+	}
 }
 
 func (s IamRolePolicySupplier) Resources() ([]resource.Resource, error) {
 	policies, err := listIamRolePolicies(s.client)
 	if err != nil {
-		return nil, err
+		handled := handleListAwsError(err, resourceaws.AwsIamRolePolicyResourceType, s.alerter)
+		if !handled {
+			return nil, err
+		}
+		return []resource.Resource{}, nil
 	}
 	for _, policyName := range policies {
 		name := policyName

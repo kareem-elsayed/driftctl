@@ -3,7 +3,9 @@ package aws
 import (
 	"github.com/aws/aws-sdk-go/service/iam"
 	"github.com/aws/aws-sdk-go/service/iam/iamiface"
+	"github.com/cloudskiff/driftctl/pkg/alerter"
 	"github.com/cloudskiff/driftctl/pkg/parallel"
+
 	"github.com/cloudskiff/driftctl/pkg/remote/deserializer"
 	"github.com/cloudskiff/driftctl/pkg/resource"
 	resourceaws "github.com/cloudskiff/driftctl/pkg/resource/aws"
@@ -19,16 +21,27 @@ type IamUserPolicyAttachmentSupplier struct {
 	deserializer deserializer.CTYDeserializer
 	client       iamiface.IAMAPI
 	runner       *terraform.ParallelResourceReader
+	alerter      *alerter.Alerter
 }
 
-func NewIamUserPolicyAttachmentSupplier(runner *parallel.ParallelRunner, client iamiface.IAMAPI) *IamUserPolicyAttachmentSupplier {
-	return &IamUserPolicyAttachmentSupplier{terraform.Provider(terraform.AWS), awsdeserializer.NewIamUserPolicyAttachmentDeserializer(), client, terraform.NewParallelResourceReader(runner)}
+func NewIamUserPolicyAttachmentSupplier(runner *parallel.ParallelRunner, client iamiface.IAMAPI, alerter *alerter.Alerter) *IamUserPolicyAttachmentSupplier {
+	return &IamUserPolicyAttachmentSupplier{
+		terraform.Provider(terraform.AWS),
+		awsdeserializer.NewIamUserPolicyAttachmentDeserializer(),
+		client,
+		terraform.NewParallelResourceReader(runner),
+		alerter,
+	}
 }
 
 func (s IamUserPolicyAttachmentSupplier) Resources() ([]resource.Resource, error) {
 	users, err := listIamUsers(s.client)
 	if err != nil {
-		return nil, err
+		handled := handleListAwsErrorWithMessage(err, resourceaws.AwsIamUserPolicyAttachmentResourceType, s.alerter, resourceaws.AwsIamUserResourceType)
+		if !handled {
+			return nil, err
+		}
+		return []resource.Resource{}, nil
 	}
 	results := make([]cty.Value, 0)
 	if len(users) > 0 {
@@ -37,7 +50,10 @@ func (s IamUserPolicyAttachmentSupplier) Resources() ([]resource.Resource, error
 			userName := *user.UserName
 			policyAttachmentList, err := listIamUserPoliciesAttachment(userName, s.client)
 			if err != nil {
-				return nil, err
+				handled := handleListAwsError(err, resourceaws.AwsIamUserPolicyAttachmentResourceType, s.alerter)
+				if !handled {
+					return nil, err
+				}
 			}
 			attachedPolicies = append(attachedPolicies, policyAttachmentList...)
 		}

@@ -4,7 +4,9 @@ import (
 	"context"
 	"testing"
 
+	"github.com/cloudskiff/driftctl/pkg/alerter"
 	"github.com/cloudskiff/driftctl/pkg/parallel"
+
 	"github.com/cloudskiff/driftctl/pkg/remote/deserializer"
 	awsdeserializer "github.com/cloudskiff/driftctl/pkg/resource/aws/deserializer"
 
@@ -89,6 +91,8 @@ func TestSubnetSupplier_Resources(t *testing.T) {
 		},
 	}
 	for _, c := range cases {
+		alertr := alerter.NewAlerter()
+
 		shouldUpdate := c.dirName == *goldenfile.Update
 		if shouldUpdate {
 			provider, err := NewTerraFormProvider()
@@ -97,7 +101,7 @@ func TestSubnetSupplier_Resources(t *testing.T) {
 			}
 
 			terraform.AddProvider(terraform.AWS, provider)
-			resource.AddSupplier(NewSubnetSupplier(provider.Runner(), ec2.New(provider.session)))
+			resource.AddSupplier(NewSubnetSupplier(provider.Runner(), ec2.New(provider.session), alertr))
 		}
 
 		t.Run(c.test, func(tt *testing.T) {
@@ -113,6 +117,7 @@ func TestSubnetSupplier_Resources(t *testing.T) {
 				&fakeEC2,
 				terraform.NewParallelResourceReader(parallel.NewParallelRunner(context.TODO(), 10)),
 				terraform.NewParallelResourceReader(parallel.NewParallelRunner(context.TODO(), 10)),
+				alertr,
 			}
 			got, err := s.Resources()
 			if c.err != err {

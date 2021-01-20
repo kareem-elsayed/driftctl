@@ -3,7 +3,9 @@ package aws
 import (
 	"strings"
 
+	"github.com/cloudskiff/driftctl/pkg/alerter"
 	"github.com/cloudskiff/driftctl/pkg/parallel"
+
 	awsdeserializer "github.com/cloudskiff/driftctl/pkg/resource/aws/deserializer"
 
 	"github.com/cloudskiff/driftctl/pkg/remote/deserializer"
@@ -15,7 +17,6 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/route53"
 	"github.com/aws/aws-sdk-go/service/route53/route53iface"
-	"github.com/sirupsen/logrus"
 	"github.com/zclconf/go-cty/cty"
 )
 
@@ -24,23 +25,36 @@ type Route53RecordSupplier struct {
 	deserializer deserializer.CTYDeserializer
 	client       route53iface.Route53API
 	runner       *terraform.ParallelResourceReader
+	alerter      *alerter.Alerter
 }
 
-func NewRoute53RecordSupplier(runner *parallel.ParallelRunner, client route53iface.Route53API) *Route53RecordSupplier {
-	return &Route53RecordSupplier{terraform.Provider(terraform.AWS), awsdeserializer.NewRoute53RecordDeserializer(), client, terraform.NewParallelResourceReader(runner)}
+func NewRoute53RecordSupplier(runner *parallel.ParallelRunner, client route53iface.Route53API, alerter *alerter.Alerter) *Route53RecordSupplier {
+	return &Route53RecordSupplier{
+		terraform.Provider(terraform.AWS),
+		awsdeserializer.NewRoute53RecordDeserializer(),
+		client,
+		terraform.NewParallelResourceReader(runner),
+		alerter,
+	}
 }
 
 func (s Route53RecordSupplier) Resources() ([]resource.Resource, error) {
 
 	zones, err := s.listZones()
 	if err != nil {
-		logrus.Error(err)
-		return nil, err
+		handled := handleListAwsErrorWithMessage(err, resourceaws.AwsRoute53RecordResourceType, s.alerter, resourceaws.AwsRoute53ZoneResourceType)
+		if !handled {
+			return nil, err
+		}
+		return []resource.Resource{}, nil
 	}
 
 	for _, zone := range zones {
 		if err := s.listRecordsForZone(zone[0], zone[1]); err != nil {
-			return nil, err
+			handled := handleListAwsError(err, resourceaws.AwsRoute53RecordResourceType, s.alerter)
+			if !handled {
+				return nil, err
+			}
 		}
 	}
 

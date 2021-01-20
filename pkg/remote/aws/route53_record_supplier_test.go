@@ -4,7 +4,12 @@ import (
 	"context"
 	"testing"
 
+	"github.com/aws/aws-sdk-go/aws/awserr"
+	"github.com/stretchr/testify/assert"
+
+	"github.com/cloudskiff/driftctl/pkg/alerter"
 	"github.com/cloudskiff/driftctl/pkg/parallel"
+
 	awsdeserializer "github.com/cloudskiff/driftctl/pkg/resource/aws/deserializer"
 
 	"github.com/cloudskiff/driftctl/test/goldenfile"
@@ -24,6 +29,8 @@ func TestRoute53RecordSupplier_Resources(t *testing.T) {
 		dirName      string
 		zonesPages   mocks.ListHostedZonesPagesOutput
 		recordsPages mocks.ListResourceRecordSetsPagesOutput
+		listError    error
+		wantAlert    alerter.Alerts
 		err          error
 	}{
 		{
@@ -49,7 +56,8 @@ func TestRoute53RecordSupplier_Resources(t *testing.T) {
 					"Z1035360GLIB82T1EH2G",
 				},
 			},
-			err: nil,
+			wantAlert: alerter.Alerts{},
+			err:       nil,
 		},
 		{
 			test:    "multiples records in multiples zones (test pagination)",
@@ -123,7 +131,8 @@ func TestRoute53RecordSupplier_Resources(t *testing.T) {
 					"Z10347383HV75H96J919W",
 				},
 			},
-			err: nil,
+			wantAlert: alerter.Alerts{},
+			err:       nil,
 		},
 		{
 			test:    "explicit subdomain records",
@@ -175,11 +184,20 @@ func TestRoute53RecordSupplier_Resources(t *testing.T) {
 					"Z06486383UC8WYSBZTWFM",
 				},
 			},
-			err: nil,
+			wantAlert: alerter.Alerts{},
+			err:       nil,
+		},
+		{
+			test:      "cannot list records",
+			dirName:   "route53_zone_with_no_record",
+			listError: awserr.NewRequestFailure(nil, 403, ""),
+			wantAlert: alerter.Alerts{"aws_route53_record": []alerter.Alert{alerter.Alert{Message: "Ignoring aws_route53_record from drift calculation. Listing aws_route53_zone is forbidden.", ShouldIgnoreResource: true}}},
+			err:       nil,
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.test, func(t *testing.T) {
+			alertr := alerter.NewAlerter()
 			shouldUpdate := tt.dirName == *goldenfile.Update
 			if shouldUpdate {
 				provider, err := NewTerraFormProvider()
@@ -188,22 +206,28 @@ func TestRoute53RecordSupplier_Resources(t *testing.T) {
 				}
 
 				terraform.AddProvider(terraform.AWS, provider)
-				resource.AddSupplier(NewRoute53RecordSupplier(provider.Runner(), route53.New(provider.session)))
+				resource.AddSupplier(NewRoute53RecordSupplier(provider.Runner(), route53.New(provider.session), alertr))
 			}
 
 			provider := mocks.NewMockedGoldenTFProvider(tt.dirName, terraform.Provider(terraform.AWS), shouldUpdate)
 			deserializer := awsdeserializer.NewRoute53RecordDeserializer()
+			client := mocks.NewMockAWSRoute53RecordClient(tt.zonesPages, tt.recordsPages)
+			if tt.listError != nil {
+				client = mocks.NewMockAWSRoute53ErrorClient(tt.listError)
+			}
 			s := &Route53RecordSupplier{
 				provider,
 				deserializer,
-				mocks.NewMockAWSRoute53RecordClient(tt.zonesPages, tt.recordsPages),
+				client,
 				terraform.NewParallelResourceReader(parallel.NewParallelRunner(context.TODO(), 10)),
+				alertr,
 			}
 			got, err := s.Resources()
 			if tt.err != err {
 				t.Errorf("Expected error %+v got %+v", tt.err, err)
 			}
 
+			assert.Equal(t, tt.wantAlert, alertr.Retrieve())
 			test.CtyTestDiff(got, tt.dirName, provider, deserializer, shouldUpdate, t)
 		})
 	}

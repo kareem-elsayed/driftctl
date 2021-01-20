@@ -3,6 +3,7 @@ package aws
 import (
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/aws/aws-sdk-go/service/ec2/ec2iface"
+	"github.com/cloudskiff/driftctl/pkg/alerter"
 	"github.com/cloudskiff/driftctl/pkg/parallel"
 	"github.com/cloudskiff/driftctl/pkg/remote/deserializer"
 	"github.com/cloudskiff/driftctl/pkg/resource"
@@ -18,21 +19,27 @@ type InternetGatewaySupplier struct {
 	deserializer deserializer.CTYDeserializer
 	client       ec2iface.EC2API
 	runner       *terraform.ParallelResourceReader
+	alerter      *alerter.Alerter
 }
 
-func NewInternetGatewaySupplier(runner *parallel.ParallelRunner, client ec2iface.EC2API) *InternetGatewaySupplier {
+func NewInternetGatewaySupplier(runner *parallel.ParallelRunner, client ec2iface.EC2API, alerter *alerter.Alerter) *InternetGatewaySupplier {
 	return &InternetGatewaySupplier{
 		terraform.Provider(terraform.AWS),
 		awsdeserializer.NewInternetGatewayDeserializer(),
 		client,
 		terraform.NewParallelResourceReader(runner),
+		alerter,
 	}
 }
 
 func (s InternetGatewaySupplier) Resources() ([]resource.Resource, error) {
 	internetGateways, err := listInternetGateways(s.client)
 	if err != nil {
-		return nil, err
+		handled := handleListAwsError(err, aws.AwsInternetGatewayResourceType, s.alerter)
+		if !handled {
+			return nil, err
+		}
+		return []resource.Resource{}, nil
 	}
 
 	for _, internetGateway := range internetGateways {

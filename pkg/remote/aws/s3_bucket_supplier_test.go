@@ -4,7 +4,12 @@ import (
 	"context"
 	"testing"
 
+	"github.com/aws/aws-sdk-go/aws/awserr"
+	"github.com/stretchr/testify/assert"
+
+	"github.com/cloudskiff/driftctl/pkg/alerter"
 	"github.com/cloudskiff/driftctl/pkg/parallel"
+
 	awsdeserializer "github.com/cloudskiff/driftctl/pkg/resource/aws/deserializer"
 
 	"github.com/cloudskiff/driftctl/test/goldenfile"
@@ -22,6 +27,8 @@ func TestS3BucketSupplier_Resources(t *testing.T) {
 		dirName        string
 		bucketsIDs     []string
 		bucketLocation map[string]string
+		listError      error
+		wantAlert      alerter.Alerts
 		wantErr        bool
 	}{
 		{
@@ -36,10 +43,25 @@ func TestS3BucketSupplier_Resources(t *testing.T) {
 				"bucket-martin-test-drift2": "eu-west-3",
 				"bucket-martin-test-drift3": "ap-northeast-1",
 			},
-			wantErr: false,
+			wantAlert: alerter.Alerts{},
+			wantErr:   false,
+		},
+		{
+			test: "cannot list bucket", dirName: "s3_bucket_list",
+			bucketsIDs: nil,
+			listError:  awserr.NewRequestFailure(nil, 403, ""),
+			bucketLocation: map[string]string{
+				"bucket-martin-test-drift":  "eu-west-1",
+				"bucket-martin-test-drift2": "eu-west-3",
+				"bucket-martin-test-drift3": "ap-northeast-1",
+			},
+			wantAlert: alerter.Alerts{"aws_s3_bucket": []alerter.Alert{alerter.Alert{Message: "Ignoring aws_s3_bucket from drift calculation: Listing aws_s3_bucket is forbidden.", ShouldIgnoreResource: true}}},
+			wantErr:   false,
 		},
 	}
 	for _, tt := range tests {
+		alertr := alerter.NewAlerter()
+
 		shouldUpdate := tt.dirName == *goldenfile.Update
 		if shouldUpdate {
 			provider, err := NewTerraFormProvider()
@@ -50,12 +72,12 @@ func TestS3BucketSupplier_Resources(t *testing.T) {
 			factory := AwsClientFactory{config: provider.session}
 
 			terraform.AddProvider(terraform.AWS, provider)
-			resource.AddSupplier(NewS3BucketSupplier(provider.Runner().SubRunner(), factory))
+			resource.AddSupplier(NewS3BucketSupplier(provider.Runner().SubRunner(), factory, alertr))
 		}
 
 		t.Run(tt.test, func(t *testing.T) {
 
-			factory := mocks.NewMockAwsClientFactory(mocks.NewMockAWSS3Client(tt.bucketsIDs, nil, nil, nil, tt.bucketLocation))
+			factory := mocks.NewMockAwsClientFactory(mocks.NewMockAWSS3Client(tt.bucketsIDs, nil, nil, nil, tt.bucketLocation, tt.listError))
 
 			provider := mocks.NewMockedGoldenTFProvider(tt.dirName, terraform.Provider(terraform.AWS), shouldUpdate)
 			deserializer := awsdeserializer.NewS3BucketDeserializer()
@@ -64,12 +86,14 @@ func TestS3BucketSupplier_Resources(t *testing.T) {
 				deserializer,
 				factory,
 				terraform.NewParallelResourceReader(parallel.NewParallelRunner(context.TODO(), 10)),
+				alertr,
 			}
 			got, err := s.Resources()
 			if (err != nil) != tt.wantErr {
 				t.Errorf("Resources() error = %v, wantErr %v", err, tt.wantErr)
 				return
 			}
+			assert.Equal(t, tt.wantAlert, alertr.Retrieve())
 			test.CtyTestDiff(got, tt.dirName, provider, deserializer, shouldUpdate, t)
 		})
 	}

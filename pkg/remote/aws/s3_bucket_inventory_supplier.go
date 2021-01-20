@@ -3,7 +3,9 @@ package aws
 import (
 	"fmt"
 
+	"github.com/cloudskiff/driftctl/pkg/alerter"
 	"github.com/cloudskiff/driftctl/pkg/parallel"
+
 	awsdeserializer "github.com/cloudskiff/driftctl/pkg/resource/aws/deserializer"
 
 	awssdk "github.com/aws/aws-sdk-go/aws"
@@ -22,10 +24,17 @@ type S3BucketInventorySupplier struct {
 	deserializer deserializer.CTYDeserializer
 	factory      AwsClientFactoryInterface
 	runner       *terraform.ParallelResourceReader
+	alerter      *alerter.Alerter
 }
 
-func NewS3BucketInventorySupplier(runner *parallel.ParallelRunner, factory AwsClientFactoryInterface) *S3BucketInventorySupplier {
-	return &S3BucketInventorySupplier{terraform.Provider(terraform.AWS), awsdeserializer.NewS3BucketInventoryDeserializer(), factory, terraform.NewParallelResourceReader(runner)}
+func NewS3BucketInventorySupplier(runner *parallel.ParallelRunner, factory AwsClientFactoryInterface, alerter *alerter.Alerter) *S3BucketInventorySupplier {
+	return &S3BucketInventorySupplier{
+		terraform.Provider(terraform.AWS),
+		awsdeserializer.NewS3BucketInventoryDeserializer(),
+		factory,
+		terraform.NewParallelResourceReader(runner),
+		alerter,
+	}
 }
 
 func (s *S3BucketInventorySupplier) Resources() ([]resource.Resource, error) {
@@ -34,7 +43,11 @@ func (s *S3BucketInventorySupplier) Resources() ([]resource.Resource, error) {
 	client := s.factory.GetS3Client(nil)
 	response, err := client.ListBuckets(input)
 	if err != nil {
-		return nil, err
+		handled := handleListAwsErrorWithMessage(err, aws.AwsS3BucketInventoryResourceType, s.alerter, aws.AwsS3BucketResourceType)
+		if !handled {
+			return nil, err
+		}
+		return []resource.Resource{}, nil
 	}
 
 	for _, bucket := range response.Buckets {
@@ -47,7 +60,11 @@ func (s *S3BucketInventorySupplier) Resources() ([]resource.Resource, error) {
 			continue
 		}
 		if err := s.listBucketInventoryConfiguration(*bucket.Name, region); err != nil {
-			return nil, err
+			handled := handleListAwsError(err, aws.AwsS3BucketInventoryResourceType, s.alerter)
+			if !handled {
+				return nil, err
+			}
+			return []resource.Resource{}, nil
 		}
 	}
 	ctyVals, err := s.runner.Wait()

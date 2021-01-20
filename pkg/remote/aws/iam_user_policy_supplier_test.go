@@ -4,7 +4,11 @@ import (
 	"context"
 	"testing"
 
+	"github.com/aws/aws-sdk-go/aws/awserr"
+
+	"github.com/cloudskiff/driftctl/pkg/alerter"
 	"github.com/cloudskiff/driftctl/pkg/parallel"
+
 	awsdeserializer "github.com/cloudskiff/driftctl/pkg/resource/aws/deserializer"
 
 	"github.com/aws/aws-sdk-go/aws"
@@ -13,6 +17,7 @@ import (
 
 	"github.com/cloudskiff/driftctl/test/goldenfile"
 	mocks2 "github.com/cloudskiff/driftctl/test/mocks"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 
 	"github.com/cloudskiff/driftctl/mocks"
@@ -25,10 +30,11 @@ import (
 func TestIamUserPolicySupplier_Resources(t *testing.T) {
 
 	cases := []struct {
-		test    string
-		dirName string
-		mocks   func(client *mocks.FakeIAM)
-		err     error
+		test      string
+		dirName   string
+		mocks     func(client *mocks.FakeIAM)
+		wantAlert alerter.Alerts
+		err       error
 	}{
 		{
 			test:    "no iam user (no policy)",
@@ -37,7 +43,8 @@ func TestIamUserPolicySupplier_Resources(t *testing.T) {
 				client.On("ListUsersPages", mock.Anything, mock.Anything).Return(nil)
 				client.On("ListUserPoliciesPages", mock.Anything, mock.Anything).Panic("ListUsersPoliciesPages should not be called when there is no user")
 			},
-			err: nil,
+			wantAlert: alerter.Alerts{},
+			err:       nil,
 		},
 		{
 			test:    "iam multiples users multiple policies",
@@ -127,10 +134,45 @@ func TestIamUserPolicySupplier_Resources(t *testing.T) {
 					})).Return(nil).Once()
 
 			},
-			err: nil,
+			wantAlert: alerter.Alerts{},
+			err:       nil,
+		},
+		{
+			test:    "cannot list iam user (no policy)",
+			dirName: "iam_user_policy_empty",
+			mocks: func(client *mocks.FakeIAM) {
+				client.On("ListUsersPages", mock.Anything, mock.Anything).Return(awserr.NewRequestFailure(nil, 403, ""))
+			},
+			wantAlert: alerter.Alerts{"aws_iam_user_policy": []alerter.Alert{alerter.Alert{Message: "Ignoring aws_iam_user_policy from drift calculation. Listing aws_iam_user is forbidden.", ShouldIgnoreResource: true}}},
+			err:       nil,
+		},
+
+		{
+			test:    "cannot list user policy",
+			dirName: "iam_user_policy_empty",
+			mocks: func(client *mocks.FakeIAM) {
+				client.On("ListUsersPages",
+					&iam.ListUsersInput{},
+					mock.MatchedBy(func(callback func(res *iam.ListUsersOutput, lastPage bool) bool) bool {
+						callback(&iam.ListUsersOutput{Users: []*iam.User{
+							{
+								UserName: aws.String("loadbalancer"),
+							},
+							{
+								UserName: aws.String("loadbalancer2"),
+							},
+						}}, true)
+						return true
+					})).Return(nil).Once()
+				client.On("ListUserPoliciesPages", mock.Anything, mock.Anything).Return(awserr.NewRequestFailure(nil, 403, ""))
+			},
+			wantAlert: alerter.Alerts{"aws_iam_user_policy": []alerter.Alert{alerter.Alert{Message: "Ignoring aws_iam_user_policy from drift calculation: Listing aws_iam_user_policy is forbidden.", ShouldIgnoreResource: true}}},
+			err:       nil,
 		},
 	}
 	for _, c := range cases {
+		alertr := alerter.NewAlerter()
+
 		shouldUpdate := c.dirName == *goldenfile.Update
 		if shouldUpdate {
 			provider, err := NewTerraFormProvider()
@@ -139,7 +181,7 @@ func TestIamUserPolicySupplier_Resources(t *testing.T) {
 			}
 
 			terraform.AddProvider(terraform.AWS, provider)
-			resource.AddSupplier(NewIamUserPolicySupplier(provider.Runner(), iam.New(provider.session)))
+			resource.AddSupplier(NewIamUserPolicySupplier(provider.Runner(), iam.New(provider.session), alertr))
 		}
 
 		t.Run(c.test, func(tt *testing.T) {
@@ -153,6 +195,7 @@ func TestIamUserPolicySupplier_Resources(t *testing.T) {
 				deserializer,
 				&fakeIam,
 				terraform.NewParallelResourceReader(parallel.NewParallelRunner(context.TODO(), 10)),
+				alertr,
 			}
 			got, err := s.Resources()
 			if c.err != err {
@@ -160,6 +203,7 @@ func TestIamUserPolicySupplier_Resources(t *testing.T) {
 			}
 
 			mock.AssertExpectationsForObjects(tt)
+			assert.Equal(t, c.wantAlert, alertr.Retrieve())
 			test.CtyTestDiff(got, c.dirName, provider, deserializer, shouldUpdate, t)
 		})
 	}

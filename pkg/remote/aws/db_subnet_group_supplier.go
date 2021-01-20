@@ -1,6 +1,7 @@
 package aws
 
 import (
+	"github.com/cloudskiff/driftctl/pkg/alerter"
 	"github.com/cloudskiff/driftctl/pkg/parallel"
 	"github.com/cloudskiff/driftctl/pkg/remote/deserializer"
 	"github.com/cloudskiff/driftctl/pkg/resource/aws"
@@ -22,14 +23,16 @@ type DBSubnetGroupSupplier struct {
 	deserializer deserializer.CTYDeserializer
 	client       rdsiface.RDSAPI
 	runner       *terraform.ParallelResourceReader
+	alerter      *alerter.Alerter
 }
 
-func NewDBSubnetGroupSupplier(runner *parallel.ParallelRunner, client rdsiface.RDSAPI) *DBSubnetGroupSupplier {
+func NewDBSubnetGroupSupplier(runner *parallel.ParallelRunner, client rdsiface.RDSAPI, alerter *alerter.Alerter) *DBSubnetGroupSupplier {
 	return &DBSubnetGroupSupplier{
 		terraform.Provider(terraform.AWS),
 		awsdeserializer.NewDBSubnetGroupDeserializer(),
 		client,
 		terraform.NewParallelResourceReader(runner),
+		alerter,
 	}
 }
 
@@ -45,8 +48,11 @@ func (s DBSubnetGroupSupplier) Resources() ([]resource.Resource, error) {
 	)
 
 	if err != nil {
-		logrus.Error(err)
-		return nil, err
+		handled := handleListAwsError(err, aws.AwsDbSubnetGroupResourceType, s.alerter)
+		if !handled {
+			return nil, err
+		}
+		return []resource.Resource{}, nil
 	}
 
 	for _, subnetGroup := range subnetGroups {

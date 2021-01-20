@@ -3,6 +3,7 @@ package aws
 import (
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/aws/aws-sdk-go/service/ec2/ec2iface"
+	"github.com/cloudskiff/driftctl/pkg/alerter"
 	"github.com/cloudskiff/driftctl/pkg/parallel"
 	"github.com/cloudskiff/driftctl/pkg/remote/deserializer"
 	"github.com/cloudskiff/driftctl/pkg/resource"
@@ -19,14 +20,16 @@ type RouteSupplier struct {
 	routeDeserializer deserializer.CTYDeserializer
 	client            ec2iface.EC2API
 	routeRunner       *terraform.ParallelResourceReader
+	alerter           *alerter.Alerter
 }
 
-func NewRouteSupplier(runner *parallel.ParallelRunner, client ec2iface.EC2API) *RouteSupplier {
+func NewRouteSupplier(runner *parallel.ParallelRunner, client ec2iface.EC2API, alerter *alerter.Alerter) *RouteSupplier {
 	return &RouteSupplier{
 		terraform.Provider(terraform.AWS),
 		awsdeserializer.NewRouteDeserializer(),
 		client,
 		terraform.NewParallelResourceReader(runner.SubRunner()),
+		alerter,
 	}
 }
 
@@ -34,16 +37,15 @@ func (s RouteSupplier) Resources() ([]resource.Resource, error) {
 
 	routeTables, err := listRouteTables(s.client)
 	if err != nil {
-		logrus.Error(err)
-		return nil, err
+		handled := handleListAwsErrorWithMessage(err, aws.AwsRouteResourceType, s.alerter, aws.AwsRouteTableResourceType)
+		if !handled {
+			return nil, err
+		}
+		return []resource.Resource{}, nil
 	}
 
 	for _, routeTable := range routeTables {
 		table := *routeTable
-		if err != nil {
-			logrus.Error(err)
-			return nil, err
-		}
 		for _, route := range table.Routes {
 			res := *route
 			s.routeRunner.Run(func() (cty.Value, error) {

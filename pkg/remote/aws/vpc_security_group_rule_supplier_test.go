@@ -4,7 +4,9 @@ import (
 	"context"
 	"testing"
 
+	"github.com/cloudskiff/driftctl/pkg/alerter"
 	"github.com/cloudskiff/driftctl/pkg/parallel"
+
 	awsdeserializer "github.com/cloudskiff/driftctl/pkg/resource/aws/deserializer"
 
 	"github.com/aws/aws-sdk-go/service/ec2"
@@ -215,6 +217,8 @@ func TestVPCSecurityGroupRuleSupplier_Resources(t *testing.T) {
 		},
 	}
 	for _, c := range cases {
+		alertr := alerter.NewAlerter()
+
 		shouldUpdate := c.dirName == *goldenfile.Update
 		if shouldUpdate {
 			provider, err := NewTerraFormProvider()
@@ -223,7 +227,7 @@ func TestVPCSecurityGroupRuleSupplier_Resources(t *testing.T) {
 			}
 
 			terraform.AddProvider(terraform.AWS, provider)
-			resource.AddSupplier(NewVPCSecurityGroupRuleSupplier(provider.Runner(), ec2.New(provider.session)))
+			resource.AddSupplier(NewVPCSecurityGroupRuleSupplier(provider.Runner(), ec2.New(provider.session), alertr))
 		}
 
 		t.Run(c.test, func(tt *testing.T) {
@@ -236,6 +240,7 @@ func TestVPCSecurityGroupRuleSupplier_Resources(t *testing.T) {
 				deserializer,
 				&fakeEC2,
 				terraform.NewParallelResourceReader(parallel.NewParallelRunner(context.TODO(), 10)),
+				alertr,
 			}
 			got, err := s.Resources()
 			if c.err != err {

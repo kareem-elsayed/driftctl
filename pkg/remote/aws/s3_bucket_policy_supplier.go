@@ -2,7 +2,9 @@ package aws
 
 import (
 	"github.com/aws/aws-sdk-go/service/s3"
+	"github.com/cloudskiff/driftctl/pkg/alerter"
 	"github.com/cloudskiff/driftctl/pkg/parallel"
+
 	"github.com/cloudskiff/driftctl/pkg/remote/deserializer"
 	"github.com/cloudskiff/driftctl/pkg/resource"
 	"github.com/cloudskiff/driftctl/pkg/resource/aws"
@@ -16,10 +18,17 @@ type S3BucketPolicySupplier struct {
 	deserializer deserializer.CTYDeserializer
 	factory      AwsClientFactoryInterface
 	runner       *terraform.ParallelResourceReader
+	alerter      *alerter.Alerter
 }
 
-func NewS3BucketPolicySupplier(runner *parallel.ParallelRunner, factory AwsClientFactoryInterface) *S3BucketPolicySupplier {
-	return &S3BucketPolicySupplier{terraform.Provider(terraform.AWS), awsdeserializer.NewS3BucketPolicyDeserializer(), factory, terraform.NewParallelResourceReader(runner)}
+func NewS3BucketPolicySupplier(runner *parallel.ParallelRunner, factory AwsClientFactoryInterface, alerter *alerter.Alerter) *S3BucketPolicySupplier {
+	return &S3BucketPolicySupplier{
+		terraform.Provider(terraform.AWS),
+		awsdeserializer.NewS3BucketPolicyDeserializer(),
+		factory,
+		terraform.NewParallelResourceReader(runner),
+		alerter,
+	}
 }
 
 func (s *S3BucketPolicySupplier) Resources() ([]resource.Resource, error) {
@@ -28,7 +37,11 @@ func (s *S3BucketPolicySupplier) Resources() ([]resource.Resource, error) {
 	client := s.factory.GetS3Client(nil)
 	response, err := client.ListBuckets(input)
 	if err != nil {
-		return nil, err
+		handled := handleListAwsErrorWithMessage(err, aws.AwsS3BucketPolicyResourceType, s.alerter, aws.AwsS3BucketResourceType)
+		if !handled {
+			return nil, err
+		}
+		return []resource.Resource{}, nil
 	}
 
 	for _, bucket := range response.Buckets {

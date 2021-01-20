@@ -1,6 +1,7 @@
 package aws
 
 import (
+	"github.com/cloudskiff/driftctl/pkg/alerter"
 	"github.com/cloudskiff/driftctl/pkg/parallel"
 	"github.com/cloudskiff/driftctl/pkg/remote/deserializer"
 	"github.com/cloudskiff/driftctl/pkg/resource"
@@ -19,10 +20,17 @@ type DBInstanceSupplier struct {
 	deserializer deserializer.CTYDeserializer
 	client       rdsiface.RDSAPI
 	runner       *terraform.ParallelResourceReader
+	alerter      *alerter.Alerter
 }
 
-func NewDBInstanceSupplier(runner *parallel.ParallelRunner, client rdsiface.RDSAPI) *DBInstanceSupplier {
-	return &DBInstanceSupplier{terraform.Provider(terraform.AWS), awsdeserializer.NewDBInstanceDeserializer(), client, terraform.NewParallelResourceReader(runner)}
+func NewDBInstanceSupplier(runner *parallel.ParallelRunner, client rdsiface.RDSAPI, alerter *alerter.Alerter) *DBInstanceSupplier {
+	return &DBInstanceSupplier{
+		terraform.Provider(terraform.AWS),
+		awsdeserializer.NewDBInstanceDeserializer(),
+		client,
+		terraform.NewParallelResourceReader(runner),
+		alerter,
+	}
 }
 
 func listAwsDBInstances(client rdsiface.RDSAPI) ([]*rds.DBInstance, error) {
@@ -43,8 +51,11 @@ func (s DBInstanceSupplier) Resources() ([]resource.Resource, error) {
 	resourceList, err := listAwsDBInstances(s.client)
 
 	if err != nil {
-		logrus.Error(err)
-		return nil, err
+		handled := handleListAwsError(err, resourceaws.AwsDbInstanceResourceType, s.alerter)
+		if !handled {
+			return nil, err
+		}
+		return []resource.Resource{}, nil
 	}
 
 	for _, res := range resourceList {

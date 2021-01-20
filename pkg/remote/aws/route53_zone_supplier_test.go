@@ -4,7 +4,12 @@ import (
 	"context"
 	"testing"
 
+	"github.com/aws/aws-sdk-go/aws/awserr"
+	"github.com/stretchr/testify/assert"
+
+	"github.com/cloudskiff/driftctl/pkg/alerter"
 	"github.com/cloudskiff/driftctl/pkg/parallel"
+
 	awsdeserializer "github.com/cloudskiff/driftctl/pkg/resource/aws/deserializer"
 
 	"github.com/cloudskiff/driftctl/test/goldenfile"
@@ -24,6 +29,8 @@ func TestRoute53ZoneSupplier_Resources(t *testing.T) {
 		test       string
 		dirName    string
 		zonesPages mocks.ListHostedZonesPagesOutput
+		listError  error
+		wantAlert  alerter.Alerts
 		err        error
 	}{
 		{
@@ -35,7 +42,8 @@ func TestRoute53ZoneSupplier_Resources(t *testing.T) {
 					&route53.ListHostedZonesOutput{},
 				},
 			},
-			err: nil,
+			wantAlert: alerter.Alerts{},
+			err:       nil,
 		},
 		{
 			test:    "single zone",
@@ -53,7 +61,8 @@ func TestRoute53ZoneSupplier_Resources(t *testing.T) {
 					},
 				},
 			},
-			err: nil,
+			wantAlert: alerter.Alerts{},
+			err:       nil,
 		},
 		{
 			test:    "multiples zone (test pagination)",
@@ -86,10 +95,20 @@ func TestRoute53ZoneSupplier_Resources(t *testing.T) {
 					},
 				},
 			},
-			err: nil,
+			wantAlert: alerter.Alerts{},
+			err:       nil,
+		},
+		{
+			test:      "cannot list zones",
+			dirName:   "route53_zone_empty",
+			listError: awserr.NewRequestFailure(nil, 403, ""),
+			wantAlert: alerter.Alerts{"aws_route53_zone": []alerter.Alert{alerter.Alert{Message: "Ignoring aws_route53_zone from drift calculation: Listing aws_route53_zone is forbidden.", ShouldIgnoreResource: true}}},
+			err:       nil,
 		},
 	}
 	for _, tt := range tests {
+		alertr := alerter.NewAlerter()
+
 		shouldUpdate := tt.dirName == *goldenfile.Update
 		if shouldUpdate {
 			provider, err := NewTerraFormProvider()
@@ -98,23 +117,29 @@ func TestRoute53ZoneSupplier_Resources(t *testing.T) {
 			}
 
 			terraform.AddProvider(terraform.AWS, provider)
-			resource.AddSupplier(NewRoute53ZoneSupplier(provider.Runner(), route53.New(provider.session)))
+			resource.AddSupplier(NewRoute53ZoneSupplier(provider.Runner(), route53.New(provider.session), alertr))
 		}
 
 		t.Run(tt.test, func(t *testing.T) {
 			deserializer := awsdeserializer.NewRoute53ZoneDeserializer()
 			provider := mocks.NewMockedGoldenTFProvider(tt.dirName, terraform.Provider(terraform.AWS), shouldUpdate)
+			client := mocks.NewMockAWSRoute53ZoneClient(tt.zonesPages)
+			if tt.listError != nil {
+				client = mocks.NewMockAWSRoute53ErrorClient(tt.listError)
+			}
 			s := &Route53ZoneSupplier{
 				provider,
 				deserializer,
-				mocks.NewMockAWSRoute53ZoneClient(tt.zonesPages),
+				client,
 				terraform.NewParallelResourceReader(parallel.NewParallelRunner(context.TODO(), 10)),
+				alertr,
 			}
 			got, err := s.Resources()
 			if tt.err != err {
 				t.Errorf("Expected error %+v got %+v", tt.err, err)
 			}
 
+			assert.Equal(t, tt.wantAlert, alertr.Retrieve())
 			test.CtyTestDiff(got, tt.dirName, provider, deserializer, shouldUpdate, t)
 		})
 	}

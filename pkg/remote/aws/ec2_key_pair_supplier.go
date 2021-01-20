@@ -1,7 +1,9 @@
 package aws
 
 import (
+	"github.com/cloudskiff/driftctl/pkg/alerter"
 	"github.com/cloudskiff/driftctl/pkg/parallel"
+
 	"github.com/cloudskiff/driftctl/pkg/remote/deserializer"
 	"github.com/cloudskiff/driftctl/pkg/resource"
 	resourceaws "github.com/cloudskiff/driftctl/pkg/resource/aws"
@@ -20,17 +22,28 @@ type EC2KeyPairSupplier struct {
 	deserializer deserializer.CTYDeserializer
 	client       ec2iface.EC2API
 	runner       *terraform.ParallelResourceReader
+	alerter      *alerter.Alerter
 }
 
-func NewEC2KeyPairSupplier(runner *parallel.ParallelRunner, client ec2iface.EC2API) *EC2KeyPairSupplier {
-	return &EC2KeyPairSupplier{terraform.Provider(terraform.AWS), awsdeserializer.NewEC2KeyPairDeserializer(), client, terraform.NewParallelResourceReader(runner)}
+func NewEC2KeyPairSupplier(runner *parallel.ParallelRunner, client ec2iface.EC2API, alerter *alerter.Alerter) *EC2KeyPairSupplier {
+	return &EC2KeyPairSupplier{
+		terraform.Provider(terraform.AWS),
+		awsdeserializer.NewEC2KeyPairDeserializer(),
+		client,
+		terraform.NewParallelResourceReader(runner),
+		alerter,
+	}
 }
 
 func (s EC2KeyPairSupplier) Resources() ([]resource.Resource, error) {
 	input := &ec2.DescribeKeyPairsInput{}
 	response, err := s.client.DescribeKeyPairs(input)
 	if err != nil {
-		return nil, err
+		handled := handleListAwsError(err, resourceaws.AwsKeyPairResourceType, s.alerter)
+		if !handled {
+			return nil, err
+		}
+		return []resource.Resource{}, nil
 	}
 	results := make([]cty.Value, 0)
 	if len(response.KeyPairs) > 0 {

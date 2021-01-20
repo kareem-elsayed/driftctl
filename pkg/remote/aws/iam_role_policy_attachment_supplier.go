@@ -3,7 +3,9 @@ package aws
 import (
 	"github.com/aws/aws-sdk-go/service/iam"
 	"github.com/aws/aws-sdk-go/service/iam/iamiface"
+	"github.com/cloudskiff/driftctl/pkg/alerter"
 	"github.com/cloudskiff/driftctl/pkg/parallel"
+
 	"github.com/cloudskiff/driftctl/pkg/remote/deserializer"
 	"github.com/cloudskiff/driftctl/pkg/resource"
 	resourceaws "github.com/cloudskiff/driftctl/pkg/resource/aws"
@@ -19,16 +21,27 @@ type IamRolePolicyAttachmentSupplier struct {
 	deserializer deserializer.CTYDeserializer
 	client       iamiface.IAMAPI
 	runner       *terraform.ParallelResourceReader
+	alerter      *alerter.Alerter
 }
 
-func NewIamRolePolicyAttachmentSupplier(runner *parallel.ParallelRunner, client iamiface.IAMAPI) *IamRolePolicyAttachmentSupplier {
-	return &IamRolePolicyAttachmentSupplier{terraform.Provider(terraform.AWS), awsdeserializer.NewIamRolePolicyAttachmentDeserializer(), client, terraform.NewParallelResourceReader(runner)}
+func NewIamRolePolicyAttachmentSupplier(runner *parallel.ParallelRunner, client iamiface.IAMAPI, alerter *alerter.Alerter) *IamRolePolicyAttachmentSupplier {
+	return &IamRolePolicyAttachmentSupplier{
+		terraform.Provider(terraform.AWS),
+		awsdeserializer.NewIamRolePolicyAttachmentDeserializer(),
+		client,
+		terraform.NewParallelResourceReader(runner),
+		alerter,
+	}
 }
 
 func (s IamRolePolicyAttachmentSupplier) Resources() ([]resource.Resource, error) {
 	roles, err := listIamRoles(s.client)
 	if err != nil {
-		return nil, err
+		handled := handleListAwsErrorWithMessage(err, resourceaws.AwsIamRolePolicyAttachmentResourceType, s.alerter, resourceaws.AwsIamRoleResourceType)
+		if !handled {
+			return nil, err
+		}
+		return []resource.Resource{}, nil
 	}
 	results := make([]cty.Value, 0)
 	if len(roles) > 0 {
@@ -40,7 +53,10 @@ func (s IamRolePolicyAttachmentSupplier) Resources() ([]resource.Resource, error
 			}
 			roleAttachmentList, err := listIamRolePoliciesAttachment(roleName, s.client)
 			if err != nil {
-				return nil, err
+				handled := handleListAwsError(err, resourceaws.AwsIamRolePolicyAttachmentResourceType, s.alerter)
+				if !handled {
+					return nil, err
+				}
 			}
 			attachedPolicies = append(attachedPolicies, roleAttachmentList...)
 		}

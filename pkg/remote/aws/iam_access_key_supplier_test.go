@@ -4,7 +4,11 @@ import (
 	"context"
 	"testing"
 
+	"github.com/aws/aws-sdk-go/aws/awserr"
+
+	"github.com/cloudskiff/driftctl/pkg/alerter"
 	"github.com/cloudskiff/driftctl/pkg/parallel"
+
 	awsdeserializer "github.com/cloudskiff/driftctl/pkg/resource/aws/deserializer"
 
 	"github.com/cloudskiff/driftctl/test/goldenfile"
@@ -14,6 +18,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/iam"
 
 	mocks2 "github.com/cloudskiff/driftctl/test/mocks"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 
 	"github.com/cloudskiff/driftctl/mocks"
@@ -26,10 +31,11 @@ import (
 func TestIamAccessKeySupplier_Resources(t *testing.T) {
 
 	cases := []struct {
-		test    string
-		dirName string
-		mocks   func(client *mocks.FakeIAM)
-		err     error
+		test      string
+		dirName   string
+		mocks     func(client *mocks.FakeIAM)
+		wantAlert alerter.Alerts
+		err       error
 	}{
 		{
 			test:    "no iam access_key",
@@ -47,7 +53,8 @@ func TestIamAccessKeySupplier_Resources(t *testing.T) {
 					})).Return(nil)
 				client.On("ListAccessKeysPages", mock.Anything, mock.Anything).Return(nil)
 			},
-			err: nil,
+			wantAlert: alerter.Alerts{},
+			err:       nil,
 		},
 		{
 			test:    "iam multiples keys for multiples users",
@@ -105,10 +112,31 @@ func TestIamAccessKeySupplier_Resources(t *testing.T) {
 						return true
 					})).Return(nil)
 			},
-			err: nil,
+			wantAlert: alerter.Alerts{},
+			err:       nil,
+		},
+		{
+			test:    "Cannot list iam access_key",
+			dirName: "iam_access_key_empty",
+			mocks: func(client *mocks.FakeIAM) {
+				client.On("ListUsersPages",
+					&iam.ListUsersInput{},
+					mock.MatchedBy(func(callback func(res *iam.ListUsersOutput, lastPage bool) bool) bool {
+						callback(&iam.ListUsersOutput{Users: []*iam.User{
+							{
+								UserName: aws.String("test-driftctl"),
+							},
+						}}, true)
+						return true
+					})).Return(nil)
+				client.On("ListAccessKeysPages", mock.Anything, mock.Anything).Return(awserr.NewRequestFailure(nil, 403, ""))
+			},
+			wantAlert: alerter.Alerts{"aws_iam_access_key": []alerter.Alert{alerter.Alert{Message: "Ignoring aws_iam_access_key from drift calculation: Listing aws_iam_access_key is forbidden.", ShouldIgnoreResource: true}}},
+			err:       nil,
 		},
 	}
 	for _, c := range cases {
+		alertr := alerter.NewAlerter()
 		shouldUpdate := c.dirName == *goldenfile.Update
 		if shouldUpdate {
 			provider, err := NewTerraFormProvider()
@@ -117,7 +145,7 @@ func TestIamAccessKeySupplier_Resources(t *testing.T) {
 			}
 
 			terraform.AddProvider(terraform.AWS, provider)
-			resource.AddSupplier(NewIamAccessKeySupplier(provider.Runner(), iam.New(provider.session)))
+			resource.AddSupplier(NewIamAccessKeySupplier(provider.Runner(), iam.New(provider.session), alertr))
 		}
 
 		t.Run(c.test, func(tt *testing.T) {
@@ -131,6 +159,7 @@ func TestIamAccessKeySupplier_Resources(t *testing.T) {
 				deserializer,
 				&fakeIam,
 				terraform.NewParallelResourceReader(parallel.NewParallelRunner(context.TODO(), 10)),
+				alertr,
 			}
 			got, err := s.Resources()
 			if c.err != err {
@@ -138,6 +167,7 @@ func TestIamAccessKeySupplier_Resources(t *testing.T) {
 			}
 
 			mock.AssertExpectationsForObjects(tt)
+			assert.Equal(t, c.wantAlert, alertr.Retrieve())
 			test.CtyTestDiff(got, c.dirName, provider, deserializer, shouldUpdate, t)
 		})
 	}

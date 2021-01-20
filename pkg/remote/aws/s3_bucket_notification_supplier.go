@@ -1,8 +1,13 @@
 package aws
 
 import (
+	"reflect"
+
 	"github.com/aws/aws-sdk-go/service/s3"
+	"github.com/cloudskiff/driftctl/pkg/alerter"
 	"github.com/cloudskiff/driftctl/pkg/parallel"
+	"github.com/sirupsen/logrus"
+
 	"github.com/cloudskiff/driftctl/pkg/remote/deserializer"
 	"github.com/cloudskiff/driftctl/pkg/resource"
 	"github.com/cloudskiff/driftctl/pkg/resource/aws"
@@ -16,10 +21,17 @@ type S3BucketNotificationSupplier struct {
 	deserializer deserializer.CTYDeserializer
 	factory      AwsClientFactoryInterface
 	runner       *terraform.ParallelResourceReader
+	alerter      *alerter.Alerter
 }
 
-func NewS3BucketNotificationSupplier(runner *parallel.ParallelRunner, factory AwsClientFactoryInterface) *S3BucketNotificationSupplier {
-	return &S3BucketNotificationSupplier{terraform.Provider(terraform.AWS), awsdeserializer.NewS3BucketNotificationDeserializer(), factory, terraform.NewParallelResourceReader(runner)}
+func NewS3BucketNotificationSupplier(runner *parallel.ParallelRunner, factory AwsClientFactoryInterface, alerter *alerter.Alerter) *S3BucketNotificationSupplier {
+	return &S3BucketNotificationSupplier{
+		terraform.Provider(terraform.AWS),
+		awsdeserializer.NewS3BucketNotificationDeserializer(),
+		factory,
+		terraform.NewParallelResourceReader(runner),
+		alerter,
+	}
 }
 
 func (s *S3BucketNotificationSupplier) Resources() ([]resource.Resource, error) {
@@ -28,7 +40,11 @@ func (s *S3BucketNotificationSupplier) Resources() ([]resource.Resource, error) 
 	client := s.factory.GetS3Client(nil)
 	response, err := client.ListBuckets(input)
 	if err != nil {
-		return nil, err
+		handled := handleListAwsErrorWithMessage(err, aws.AwsS3BucketNotificationResourceType, s.alerter, aws.AwsS3BucketResourceType)
+		if !handled {
+			return nil, err
+		}
+		return []resource.Resource{}, nil
 	}
 
 	for _, bucket := range response.Buckets {
@@ -74,6 +90,8 @@ func (s *S3BucketNotificationSupplier) listBucketNotificationConfiguration(name,
 			},
 		})
 		if err != nil {
+			logrus.Errorf("ERROOORRR %s", reflect.TypeOf(err))
+
 			return cty.NilVal, err
 		}
 		return *s3BucketPolicy, err

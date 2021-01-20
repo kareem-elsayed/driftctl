@@ -4,7 +4,9 @@ import (
 	"context"
 	"testing"
 
+	"github.com/cloudskiff/driftctl/pkg/alerter"
 	"github.com/cloudskiff/driftctl/pkg/parallel"
+
 	awsdeserializer "github.com/cloudskiff/driftctl/pkg/resource/aws/deserializer"
 
 	"github.com/cloudskiff/driftctl/test/goldenfile"
@@ -51,6 +53,8 @@ func TestS3BucketNotificationSupplier_Resources(t *testing.T) {
 		},
 	}
 	for _, tt := range tests {
+		alertr := alerter.NewAlerter()
+
 		shouldUpdate := tt.dirName == *goldenfile.Update
 		if shouldUpdate {
 			provider, err := NewTerraFormProvider()
@@ -61,12 +65,12 @@ func TestS3BucketNotificationSupplier_Resources(t *testing.T) {
 			factory := AwsClientFactory{config: provider.session}
 
 			terraform.AddProvider(terraform.AWS, provider)
-			resource.AddSupplier(NewS3BucketNotificationSupplier(provider.Runner().SubRunner(), factory))
+			resource.AddSupplier(NewS3BucketNotificationSupplier(provider.Runner().SubRunner(), factory, alertr))
 		}
 
 		t.Run(tt.test, func(t *testing.T) {
 
-			mock := mocks.NewMockAWSS3Client(tt.bucketsIDs, nil, nil, nil, tt.bucketLocation)
+			mock := mocks.NewMockAWSS3Client(tt.bucketsIDs, nil, nil, nil, tt.bucketLocation, nil)
 			factory := mocks.NewMockAwsClientFactory(mock)
 
 			provider := mocks.NewMockedGoldenTFProvider(tt.dirName, terraform.Provider(terraform.AWS), shouldUpdate)
@@ -76,6 +80,7 @@ func TestS3BucketNotificationSupplier_Resources(t *testing.T) {
 				deserializer,
 				factory,
 				terraform.NewParallelResourceReader(parallel.NewParallelRunner(context.TODO(), 10)),
+				alertr,
 			}
 			got, err := s.Resources()
 			if (err != nil) != tt.wantErr {

@@ -7,13 +7,17 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/cloudskiff/driftctl/mocks"
+	"github.com/cloudskiff/driftctl/pkg/alerter"
 	"github.com/cloudskiff/driftctl/pkg/parallel"
 	"github.com/cloudskiff/driftctl/pkg/remote/deserializer"
-	"github.com/cloudskiff/driftctl/pkg/resource"
+
 	awsdeserializer "github.com/cloudskiff/driftctl/pkg/resource/aws/deserializer"
+
+	"github.com/cloudskiff/driftctl/test/goldenfile"
+
+	"github.com/cloudskiff/driftctl/pkg/resource"
 	"github.com/cloudskiff/driftctl/pkg/terraform"
 	"github.com/cloudskiff/driftctl/test"
-	"github.com/cloudskiff/driftctl/test/goldenfile"
 	mocks2 "github.com/cloudskiff/driftctl/test/mocks"
 	"github.com/stretchr/testify/mock"
 )
@@ -64,6 +68,8 @@ func TestVPCSecurityGroupSupplier_Resources(t *testing.T) {
 		},
 	}
 	for _, tt := range tests {
+		alertr := alerter.NewAlerter()
+
 		shouldUpdate := tt.dirName == *goldenfile.Update
 		if shouldUpdate {
 			provider, err := NewTerraFormProvider()
@@ -72,7 +78,7 @@ func TestVPCSecurityGroupSupplier_Resources(t *testing.T) {
 			}
 
 			terraform.AddProvider(terraform.AWS, provider)
-			resource.AddSupplier(NewVPCSecurityGroupSupplier(provider.Runner(), ec2.New(provider.session)))
+			resource.AddSupplier(NewVPCSecurityGroupSupplier(provider.Runner(), ec2.New(provider.session), alertr))
 		}
 
 		t.Run(tt.test, func(t *testing.T) {
@@ -88,6 +94,7 @@ func TestVPCSecurityGroupSupplier_Resources(t *testing.T) {
 				&fakeEC2,
 				terraform.NewParallelResourceReader(parallel.NewParallelRunner(context.TODO(), 10)),
 				terraform.NewParallelResourceReader(parallel.NewParallelRunner(context.TODO(), 10)),
+				alertr,
 			}
 			got, err := s.Resources()
 			if tt.err != err {

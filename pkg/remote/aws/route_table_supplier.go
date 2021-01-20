@@ -3,6 +3,8 @@ package aws
 import (
 	"errors"
 
+	"github.com/cloudskiff/driftctl/pkg/alerter"
+
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/aws/aws-sdk-go/service/ec2/ec2iface"
 	"github.com/cloudskiff/driftctl/pkg/parallel"
@@ -23,9 +25,10 @@ type RouteTableSupplier struct {
 	client                        ec2iface.EC2API
 	defaultRouteTableRunner       *terraform.ParallelResourceReader
 	routeTableRunner              *terraform.ParallelResourceReader
+	alerter                       *alerter.Alerter
 }
 
-func NewRouteTableSupplier(runner *parallel.ParallelRunner, client ec2iface.EC2API) *RouteTableSupplier {
+func NewRouteTableSupplier(runner *parallel.ParallelRunner, client ec2iface.EC2API, alerter *alerter.Alerter) *RouteTableSupplier {
 	return &RouteTableSupplier{
 		terraform.Provider(terraform.AWS),
 		awsdeserializer.NewDefaultRouteTableDeserializer(),
@@ -33,6 +36,7 @@ func NewRouteTableSupplier(runner *parallel.ParallelRunner, client ec2iface.EC2A
 		client,
 		terraform.NewParallelResourceReader(runner.SubRunner()),
 		terraform.NewParallelResourceReader(runner.SubRunner()),
+		alerter,
 	}
 }
 
@@ -40,8 +44,11 @@ func (s RouteTableSupplier) Resources() ([]resource.Resource, error) {
 
 	retrievedRouteTables, err := listRouteTables(s.client)
 	if err != nil {
-		logrus.Error(err)
-		return nil, err
+		handled := handleListAwsError(err, aws.AwsRouteTableResourceType, s.alerter)
+		if !handled {
+			return nil, err
+		}
+		return []resource.Resource{}, nil
 	}
 
 	for _, routeTable := range retrievedRouteTables {

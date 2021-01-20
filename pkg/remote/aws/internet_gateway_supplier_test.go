@@ -4,6 +4,10 @@ import (
 	"context"
 	"testing"
 
+	"github.com/aws/aws-sdk-go/aws/awserr"
+
+	"github.com/cloudskiff/driftctl/pkg/alerter"
+
 	awssdk "github.com/aws/aws-sdk-go/aws"
 
 	"github.com/aws/aws-sdk-go/service/ec2"
@@ -16,15 +20,17 @@ import (
 	"github.com/cloudskiff/driftctl/test"
 	"github.com/cloudskiff/driftctl/test/goldenfile"
 	mocks2 "github.com/cloudskiff/driftctl/test/mocks"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 )
 
 func TestInternetGatewaySupplier_Resources(t *testing.T) {
 	cases := []struct {
-		test    string
-		dirName string
-		mocks   func(client *mocks.FakeEC2)
-		err     error
+		test      string
+		dirName   string
+		mocks     func(client *mocks.FakeEC2)
+		wantAlert alerter.Alerts
+		err       error
 	}{
 		{
 			test:    "no internet gateways",
@@ -37,7 +43,8 @@ func TestInternetGatewaySupplier_Resources(t *testing.T) {
 						return true
 					})).Return(nil)
 			},
-			err: nil,
+			wantAlert: alerter.Alerts{},
+			err:       nil,
 		},
 		{
 			test:    "multiple internet gateways",
@@ -59,10 +66,26 @@ func TestInternetGatewaySupplier_Resources(t *testing.T) {
 						return true
 					})).Return(nil)
 			},
-			err: nil,
+			wantAlert: alerter.Alerts{},
+			err:       nil,
+		},
+		{
+			test:    "cannot list internet gateways",
+			dirName: "internet_gateway_empty",
+			mocks: func(client *mocks.FakeEC2) {
+				client.On("DescribeInternetGatewaysPages",
+					&ec2.DescribeInternetGatewaysInput{},
+					mock.MatchedBy(func(callback func(res *ec2.DescribeInternetGatewaysOutput, lastPage bool) bool) bool {
+						return true
+					})).Return(awserr.NewRequestFailure(nil, 403, ""))
+			},
+			wantAlert: alerter.Alerts{"aws_internet_gateway": []alerter.Alert{alerter.Alert{Message: "Ignoring aws_internet_gateway from drift calculation: Listing aws_internet_gateway is forbidden.", ShouldIgnoreResource: true}}},
+			err:       nil,
 		},
 	}
 	for _, c := range cases {
+		alertr := alerter.NewAlerter()
+
 		shouldUpdate := c.dirName == *goldenfile.Update
 		if shouldUpdate {
 			provider, err := NewTerraFormProvider()
@@ -71,7 +94,7 @@ func TestInternetGatewaySupplier_Resources(t *testing.T) {
 			}
 
 			terraform.AddProvider(terraform.AWS, provider)
-			resource.AddSupplier(NewInternetGatewaySupplier(provider.Runner(), ec2.New(provider.session)))
+			resource.AddSupplier(NewInternetGatewaySupplier(provider.Runner(), ec2.New(provider.session), alertr))
 		}
 
 		t.Run(c.test, func(tt *testing.T) {
@@ -84,6 +107,7 @@ func TestInternetGatewaySupplier_Resources(t *testing.T) {
 				internetGatewayDeserializer,
 				&fakeEC2,
 				terraform.NewParallelResourceReader(parallel.NewParallelRunner(context.TODO(), 10)),
+				alertr,
 			}
 			got, err := s.Resources()
 			if c.err != err {
@@ -92,6 +116,7 @@ func TestInternetGatewaySupplier_Resources(t *testing.T) {
 
 			mock.AssertExpectationsForObjects(tt)
 			deserializers := []deserializer.CTYDeserializer{internetGatewayDeserializer}
+			assert.Equal(t, c.wantAlert, alertr.Retrieve())
 			test.CtyTestDiffMixed(got, c.dirName, provider, deserializers, shouldUpdate, tt)
 		})
 	}

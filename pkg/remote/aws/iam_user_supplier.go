@@ -3,7 +3,9 @@ package aws
 import (
 	"github.com/aws/aws-sdk-go/service/iam"
 	"github.com/aws/aws-sdk-go/service/iam/iamiface"
+	"github.com/cloudskiff/driftctl/pkg/alerter"
 	"github.com/cloudskiff/driftctl/pkg/parallel"
+
 	"github.com/cloudskiff/driftctl/pkg/remote/deserializer"
 	"github.com/cloudskiff/driftctl/pkg/resource"
 	resourceaws "github.com/cloudskiff/driftctl/pkg/resource/aws"
@@ -19,16 +21,27 @@ type IamUserSupplier struct {
 	deserializer deserializer.CTYDeserializer
 	client       iamiface.IAMAPI
 	runner       *terraform.ParallelResourceReader
+	alerter      *alerter.Alerter
 }
 
-func NewIamUserSupplier(runner *parallel.ParallelRunner, client iamiface.IAMAPI) *IamUserSupplier {
-	return &IamUserSupplier{terraform.Provider(terraform.AWS), awsdeserializer.NewIamUserDeserializer(), client, terraform.NewParallelResourceReader(runner)}
+func NewIamUserSupplier(runner *parallel.ParallelRunner, client iamiface.IAMAPI, alerter *alerter.Alerter) *IamUserSupplier {
+	return &IamUserSupplier{
+		terraform.Provider(terraform.AWS),
+		awsdeserializer.NewIamUserDeserializer(),
+		client,
+		terraform.NewParallelResourceReader(runner),
+		alerter,
+	}
 }
 
 func (s IamUserSupplier) Resources() ([]resource.Resource, error) {
 	users, err := listIamUsers(s.client)
 	if err != nil {
-		return nil, err
+		handled := handleListAwsError(err, resourceaws.AwsIamUserResourceType, s.alerter)
+		if !handled {
+			return nil, err
+		}
+		return []resource.Resource{}, nil
 	}
 	results := make([]cty.Value, 0)
 	if len(users) > 0 {

@@ -4,8 +4,11 @@ import (
 	"context"
 	"testing"
 
+	"github.com/cloudskiff/driftctl/pkg/alerter"
+
 	"github.com/aws/aws-sdk-go/aws"
 	awssdk "github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/aws/awserr"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/cloudskiff/driftctl/mocks"
 	"github.com/cloudskiff/driftctl/pkg/parallel"
@@ -16,15 +19,17 @@ import (
 	"github.com/cloudskiff/driftctl/test"
 	"github.com/cloudskiff/driftctl/test/goldenfile"
 	mocks2 "github.com/cloudskiff/driftctl/test/mocks"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 )
 
 func TestRouteTableAssociationSupplier_Resources(t *testing.T) {
 	cases := []struct {
-		test    string
-		dirName string
-		mocks   func(client *mocks.FakeEC2)
-		err     error
+		test      string
+		dirName   string
+		mocks     func(client *mocks.FakeEC2)
+		wantAlert alerter.Alerts
+		err       error
 	}{
 		{
 			test:    "no route table associations (test for nil values)",
@@ -56,7 +61,8 @@ func TestRouteTableAssociationSupplier_Resources(t *testing.T) {
 						return true
 					})).Return(nil)
 			},
-			err: nil,
+			wantAlert: alerter.Alerts{},
+			err:       nil,
 		},
 		{
 			test:    "route_table_association (mixed subnet and gateway associations)",
@@ -128,10 +134,26 @@ func TestRouteTableAssociationSupplier_Resources(t *testing.T) {
 						return true
 					})).Return(nil)
 			},
-			err: nil,
+			wantAlert: alerter.Alerts{},
+			err:       nil,
+		},
+		{
+			test:    "Cannot list route table",
+			dirName: "route_table_assoc_empty",
+			mocks: func(client *mocks.FakeEC2) {
+				client.On("DescribeRouteTablesPages",
+					&ec2.DescribeRouteTablesInput{},
+					mock.MatchedBy(func(callback func(res *ec2.DescribeRouteTablesOutput, lastPage bool) bool) bool {
+						return true
+					})).Return(awserr.NewRequestFailure(nil, 403, ""))
+			},
+			wantAlert: alerter.Alerts{"aws_route_table_association": []alerter.Alert{alerter.Alert{Message: "Ignoring aws_route_table_association from drift calculation: Listing aws_route_table_association is forbidden.", ShouldIgnoreResource: true}}},
+			err:       nil,
 		},
 	}
 	for _, c := range cases {
+		alertr := alerter.NewAlerter()
+
 		shouldUpdate := c.dirName == *goldenfile.Update
 		if shouldUpdate {
 			provider, err := NewTerraFormProvider()
@@ -140,7 +162,7 @@ func TestRouteTableAssociationSupplier_Resources(t *testing.T) {
 			}
 
 			terraform.AddProvider(terraform.AWS, provider)
-			resource.AddSupplier(NewRouteTableAssociationSupplier(provider.Runner(), ec2.New(provider.session)))
+			resource.AddSupplier(NewRouteTableAssociationSupplier(provider.Runner(), ec2.New(provider.session), alertr))
 		}
 
 		t.Run(c.test, func(tt *testing.T) {
@@ -153,6 +175,7 @@ func TestRouteTableAssociationSupplier_Resources(t *testing.T) {
 				routeTableAssociationDeserializer,
 				&fakeEC2,
 				terraform.NewParallelResourceReader(parallel.NewParallelRunner(context.TODO(), 10)),
+				alertr,
 			}
 			got, err := s.Resources()
 			if c.err != err {
@@ -161,6 +184,7 @@ func TestRouteTableAssociationSupplier_Resources(t *testing.T) {
 
 			mock.AssertExpectationsForObjects(tt)
 			deserializers := []deserializer.CTYDeserializer{routeTableAssociationDeserializer}
+			assert.Equal(t, c.wantAlert, alertr.Retrieve())
 			test.CtyTestDiffMixed(got, c.dirName, provider, deserializers, shouldUpdate, tt)
 		})
 	}

@@ -4,6 +4,10 @@ import (
 	"context"
 	"testing"
 
+	"github.com/aws/aws-sdk-go/aws/awserr"
+
+	"github.com/cloudskiff/driftctl/pkg/alerter"
+
 	awssdk "github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/cloudskiff/driftctl/mocks"
@@ -15,15 +19,17 @@ import (
 	"github.com/cloudskiff/driftctl/test"
 	"github.com/cloudskiff/driftctl/test/goldenfile"
 	mocks2 "github.com/cloudskiff/driftctl/test/mocks"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 )
 
 func TestRouteSupplier_Resources(t *testing.T) {
 	cases := []struct {
-		test    string
-		dirName string
-		mocks   func(client *mocks.FakeEC2)
-		err     error
+		test      string
+		dirName   string
+		mocks     func(client *mocks.FakeEC2)
+		wantAlert alerter.Alerts
+		err       error
 	}{
 		{
 			// route table with no route case is not possible
@@ -38,7 +44,8 @@ func TestRouteSupplier_Resources(t *testing.T) {
 						return true
 					})).Return(nil)
 			},
-			err: nil,
+			wantAlert: alerter.Alerts{},
+			err:       nil,
 		},
 		{
 			test:    "mixed default_route_table and route_table",
@@ -124,10 +131,26 @@ func TestRouteSupplier_Resources(t *testing.T) {
 						return true
 					})).Return(nil)
 			},
-			err: nil,
+			wantAlert: alerter.Alerts{},
+			err:       nil,
+		},
+		{
+			test:    "cannot list route table",
+			dirName: "route_empty",
+			mocks: func(client *mocks.FakeEC2) {
+				client.On("DescribeRouteTablesPages",
+					&ec2.DescribeRouteTablesInput{},
+					mock.MatchedBy(func(callback func(res *ec2.DescribeRouteTablesOutput, lastPage bool) bool) bool {
+						return true
+					})).Return(awserr.NewRequestFailure(nil, 403, ""))
+			},
+			wantAlert: alerter.Alerts{"aws_route": []alerter.Alert{alerter.Alert{Message: "Ignoring aws_route from drift calculation. Listing aws_route_table is forbidden.", ShouldIgnoreResource: true}}},
+			err:       nil,
 		},
 	}
 	for _, c := range cases {
+		alertr := alerter.NewAlerter()
+
 		shouldUpdate := c.dirName == *goldenfile.Update
 		if shouldUpdate {
 			provider, err := NewTerraFormProvider()
@@ -136,7 +159,7 @@ func TestRouteSupplier_Resources(t *testing.T) {
 			}
 
 			terraform.AddProvider(terraform.AWS, provider)
-			resource.AddSupplier(NewRouteSupplier(provider.Runner(), ec2.New(provider.session)))
+			resource.AddSupplier(NewRouteSupplier(provider.Runner(), ec2.New(provider.session), alertr))
 		}
 
 		t.Run(c.test, func(tt *testing.T) {
@@ -149,6 +172,7 @@ func TestRouteSupplier_Resources(t *testing.T) {
 				routeDeserializer,
 				&fakeEC2,
 				terraform.NewParallelResourceReader(parallel.NewParallelRunner(context.TODO(), 10)),
+				alertr,
 			}
 			got, err := s.Resources()
 			if c.err != err {
@@ -157,6 +181,7 @@ func TestRouteSupplier_Resources(t *testing.T) {
 
 			mock.AssertExpectationsForObjects(tt)
 			deserializers := []deserializer.CTYDeserializer{routeDeserializer}
+			assert.Equal(t, c.wantAlert, alertr.Retrieve())
 			test.CtyTestDiffMixed(got, c.dirName, provider, deserializers, shouldUpdate, tt)
 		})
 	}

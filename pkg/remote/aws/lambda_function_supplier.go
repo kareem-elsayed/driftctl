@@ -1,7 +1,9 @@
 package aws
 
 import (
+	"github.com/cloudskiff/driftctl/pkg/alerter"
 	"github.com/cloudskiff/driftctl/pkg/parallel"
+
 	"github.com/cloudskiff/driftctl/pkg/remote/deserializer"
 	"github.com/cloudskiff/driftctl/pkg/resource"
 	resourceaws "github.com/cloudskiff/driftctl/pkg/resource/aws"
@@ -19,16 +21,27 @@ type LambdaFunctionSupplier struct {
 	deserializer deserializer.CTYDeserializer
 	client       lambdaiface.LambdaAPI
 	runner       *terraform.ParallelResourceReader
+	alerter      *alerter.Alerter
 }
 
-func NewLambdaFunctionSupplier(runner *parallel.ParallelRunner, client lambdaiface.LambdaAPI) *LambdaFunctionSupplier {
-	return &LambdaFunctionSupplier{terraform.Provider(terraform.AWS), awsdeserializer.NewLambdaFunctionDeserializer(), client, terraform.NewParallelResourceReader(runner)}
+func NewLambdaFunctionSupplier(runner *parallel.ParallelRunner, client lambdaiface.LambdaAPI, alerter *alerter.Alerter) *LambdaFunctionSupplier {
+	return &LambdaFunctionSupplier{
+		terraform.Provider(terraform.AWS),
+		awsdeserializer.NewLambdaFunctionDeserializer(),
+		client,
+		terraform.NewParallelResourceReader(runner),
+		alerter,
+	}
 }
 
 func (s LambdaFunctionSupplier) Resources() ([]resource.Resource, error) {
 	functions, err := listLambdaFunctions(s.client)
 	if err != nil {
-		return nil, err
+		handled := handleListAwsError(err, resourceaws.AwsLambdaFunctionResourceType, s.alerter)
+		if !handled {
+			return nil, err
+		}
+		return []resource.Resource{}, nil
 	}
 	results := make([]cty.Value, 0)
 	if len(functions) > 0 {

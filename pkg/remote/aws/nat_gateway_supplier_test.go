@@ -4,9 +4,12 @@ import (
 	"context"
 	"testing"
 
+	"github.com/aws/aws-sdk-go/aws/awserr"
+
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/cloudskiff/driftctl/mocks"
+	"github.com/cloudskiff/driftctl/pkg/alerter"
 	"github.com/cloudskiff/driftctl/pkg/parallel"
 	"github.com/cloudskiff/driftctl/pkg/remote/deserializer"
 	"github.com/cloudskiff/driftctl/pkg/resource"
@@ -15,15 +18,17 @@ import (
 	"github.com/cloudskiff/driftctl/test"
 	"github.com/cloudskiff/driftctl/test/goldenfile"
 	mocks2 "github.com/cloudskiff/driftctl/test/mocks"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 )
 
 func TestNatGatewaySupplier_Resources(t *testing.T) {
 	cases := []struct {
-		test    string
-		dirName string
-		mocks   func(client *mocks.FakeEC2)
-		err     error
+		test      string
+		dirName   string
+		mocks     func(client *mocks.FakeEC2)
+		wantAlert alerter.Alerts
+		err       error
 	}{
 		{
 			test:    "no gateway",
@@ -36,7 +41,8 @@ func TestNatGatewaySupplier_Resources(t *testing.T) {
 						return true
 					})).Return(nil)
 			},
-			err: nil,
+			wantAlert: alerter.Alerts{},
+			err:       nil,
 		},
 		{
 			test:    "single aws_nat_gateway",
@@ -55,10 +61,26 @@ func TestNatGatewaySupplier_Resources(t *testing.T) {
 						return true
 					})).Return(nil)
 			},
-			err: nil,
+			wantAlert: alerter.Alerts{},
+			err:       nil,
+		},
+		{
+			test:    "cannot list gateway",
+			dirName: "nat_gateway_empty",
+			mocks: func(client *mocks.FakeEC2) {
+				client.On("DescribeNatGatewaysPages",
+					&ec2.DescribeNatGatewaysInput{},
+					mock.MatchedBy(func(callback func(res *ec2.DescribeNatGatewaysOutput, lastPage bool) bool) bool {
+						return true
+					})).Return(awserr.NewRequestFailure(nil, 403, ""))
+			},
+			wantAlert: alerter.Alerts{"aws_nat_gateway": []alerter.Alert{alerter.Alert{Message: "Ignoring aws_nat_gateway from drift calculation: Listing aws_nat_gateway is forbidden.", ShouldIgnoreResource: true}}},
+			err:       nil,
 		},
 	}
 	for _, c := range cases {
+		alertr := alerter.NewAlerter()
+
 		shouldUpdate := c.dirName == *goldenfile.Update
 		if shouldUpdate {
 			provider, err := NewTerraFormProvider()
@@ -67,7 +89,7 @@ func TestNatGatewaySupplier_Resources(t *testing.T) {
 			}
 
 			terraform.AddProvider(terraform.AWS, provider)
-			resource.AddSupplier(NewNatGatewaySupplier(provider.Runner(), ec2.New(provider.session)))
+			resource.AddSupplier(NewNatGatewaySupplier(provider.Runner(), ec2.New(provider.session), alertr))
 		}
 
 		t.Run(c.test, func(tt *testing.T) {
@@ -80,6 +102,7 @@ func TestNatGatewaySupplier_Resources(t *testing.T) {
 				natGatewaydeserializer,
 				&fakeEC2,
 				terraform.NewParallelResourceReader(parallel.NewParallelRunner(context.TODO(), 10)),
+				alertr,
 			}
 			got, err := s.Resources()
 			if c.err != err {
@@ -88,6 +111,7 @@ func TestNatGatewaySupplier_Resources(t *testing.T) {
 
 			mock.AssertExpectationsForObjects(tt)
 			deserializers := []deserializer.CTYDeserializer{natGatewaydeserializer}
+			assert.Equal(t, c.wantAlert, alertr.Retrieve())
 			test.CtyTestDiffMixed(got, c.dirName, provider, deserializers, shouldUpdate, tt)
 		})
 	}

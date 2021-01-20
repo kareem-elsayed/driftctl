@@ -4,7 +4,11 @@ import (
 	"context"
 	"testing"
 
+	"github.com/aws/aws-sdk-go/aws/awserr"
+
+	"github.com/cloudskiff/driftctl/pkg/alerter"
 	"github.com/cloudskiff/driftctl/pkg/parallel"
+
 	awsdeserializer "github.com/cloudskiff/driftctl/pkg/resource/aws/deserializer"
 
 	"github.com/cloudskiff/driftctl/test/goldenfile"
@@ -14,6 +18,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/iam"
 
 	mocks2 "github.com/cloudskiff/driftctl/test/mocks"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 
 	"github.com/cloudskiff/driftctl/mocks"
@@ -26,10 +31,11 @@ import (
 func TestIamUserSupplier_Resources(t *testing.T) {
 
 	cases := []struct {
-		test    string
-		dirName string
-		mocks   func(client *mocks.FakeIAM)
-		err     error
+		test      string
+		dirName   string
+		mocks     func(client *mocks.FakeIAM)
+		wantAlert alerter.Alerts
+		err       error
 	}{
 		{
 			test:    "no iam user",
@@ -37,7 +43,8 @@ func TestIamUserSupplier_Resources(t *testing.T) {
 			mocks: func(client *mocks.FakeIAM) {
 				client.On("ListUsersPages", mock.Anything, mock.Anything).Return(nil)
 			},
-			err: nil,
+			wantAlert: alerter.Alerts{},
+			err:       nil,
 		},
 		{
 			test:    "iam multiples users",
@@ -62,10 +69,21 @@ func TestIamUserSupplier_Resources(t *testing.T) {
 						return true
 					})).Return(nil)
 			},
-			err: nil,
+			wantAlert: alerter.Alerts{},
+			err:       nil,
+		},
+		{
+			test:    "cannot list iam user",
+			dirName: "iam_user_empty",
+			mocks: func(client *mocks.FakeIAM) {
+				client.On("ListUsersPages", mock.Anything, mock.Anything).Return(awserr.NewRequestFailure(nil, 403, ""))
+			},
+			wantAlert: alerter.Alerts{"aws_iam_user": []alerter.Alert{alerter.Alert{Message: "Ignoring aws_iam_user from drift calculation: Listing aws_iam_user is forbidden.", ShouldIgnoreResource: true}}},
+			err:       nil,
 		},
 	}
 	for _, c := range cases {
+		alertr := alerter.NewAlerter()
 		shouldUpdate := c.dirName == *goldenfile.Update
 		if shouldUpdate {
 			provider, err := NewTerraFormProvider()
@@ -74,7 +92,7 @@ func TestIamUserSupplier_Resources(t *testing.T) {
 			}
 
 			terraform.AddProvider(terraform.AWS, provider)
-			resource.AddSupplier(NewIamUserSupplier(provider.Runner(), iam.New(provider.session)))
+			resource.AddSupplier(NewIamUserSupplier(provider.Runner(), iam.New(provider.session), alertr))
 		}
 
 		t.Run(c.test, func(tt *testing.T) {
@@ -88,6 +106,7 @@ func TestIamUserSupplier_Resources(t *testing.T) {
 				deserializer,
 				&fakeIam,
 				terraform.NewParallelResourceReader(parallel.NewParallelRunner(context.TODO(), 10)),
+				alertr,
 			}
 			got, err := s.Resources()
 			if c.err != err {
@@ -95,6 +114,7 @@ func TestIamUserSupplier_Resources(t *testing.T) {
 			}
 
 			mock.AssertExpectationsForObjects(tt)
+			assert.Equal(t, c.wantAlert, alertr.Retrieve())
 			test.CtyTestDiff(got, c.dirName, provider, deserializer, shouldUpdate, t)
 		})
 	}

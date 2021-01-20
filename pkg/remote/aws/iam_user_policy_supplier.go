@@ -3,7 +3,9 @@ package aws
 import (
 	"fmt"
 
+	"github.com/cloudskiff/driftctl/pkg/alerter"
 	"github.com/cloudskiff/driftctl/pkg/parallel"
+
 	awsdeserializer "github.com/cloudskiff/driftctl/pkg/resource/aws/deserializer"
 
 	"github.com/aws/aws-sdk-go/service/iam"
@@ -22,16 +24,27 @@ type IamUserPolicySupplier struct {
 	deserializer deserializer.CTYDeserializer
 	client       iamiface.IAMAPI
 	runner       *terraform.ParallelResourceReader
+	alerter      *alerter.Alerter
 }
 
-func NewIamUserPolicySupplier(runner *parallel.ParallelRunner, client iamiface.IAMAPI) *IamUserPolicySupplier {
-	return &IamUserPolicySupplier{terraform.Provider(terraform.AWS), awsdeserializer.NewIamUserPolicyDeserializer(), client, terraform.NewParallelResourceReader(runner)}
+func NewIamUserPolicySupplier(runner *parallel.ParallelRunner, client iamiface.IAMAPI, alerter *alerter.Alerter) *IamUserPolicySupplier {
+	return &IamUserPolicySupplier{
+		terraform.Provider(terraform.AWS),
+		awsdeserializer.NewIamUserPolicyDeserializer(),
+		client,
+		terraform.NewParallelResourceReader(runner),
+		alerter,
+	}
 }
 
 func (s IamUserPolicySupplier) Resources() ([]resource.Resource, error) {
 	users, err := listIamUsers(s.client)
 	if err != nil {
-		return nil, err
+		handled := handleListAwsErrorWithMessage(err, resourceaws.AwsIamUserPolicyResourceType, s.alerter, resourceaws.AwsIamUserResourceType)
+		if !handled {
+			return nil, err
+		}
+		return []resource.Resource{}, nil
 	}
 	results := make([]cty.Value, 0)
 	if len(users) > 0 {
@@ -40,7 +53,11 @@ func (s IamUserPolicySupplier) Resources() ([]resource.Resource, error) {
 			userName := *user.UserName
 			policyList, err := listIamUserPolicies(userName, s.client)
 			if err != nil {
-				return nil, err
+				handled := handleListAwsError(err, resourceaws.AwsIamUserPolicyResourceType, s.alerter)
+				if !handled {
+					return nil, err
+				}
+				return []resource.Resource{}, nil
 			}
 			for _, polName := range policyList {
 				policies = append(policies, fmt.Sprintf("%s:%s", userName, *polName))

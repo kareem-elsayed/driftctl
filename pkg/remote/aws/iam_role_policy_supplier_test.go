@@ -4,7 +4,11 @@ import (
 	"context"
 	"testing"
 
+	"github.com/aws/aws-sdk-go/aws/awserr"
+
+	"github.com/cloudskiff/driftctl/pkg/alerter"
 	"github.com/cloudskiff/driftctl/pkg/parallel"
+
 	awsdeserializer "github.com/cloudskiff/driftctl/pkg/resource/aws/deserializer"
 
 	"github.com/aws/aws-sdk-go/aws"
@@ -13,6 +17,7 @@ import (
 
 	"github.com/cloudskiff/driftctl/test/goldenfile"
 	mocks2 "github.com/cloudskiff/driftctl/test/mocks"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 
 	"github.com/cloudskiff/driftctl/mocks"
@@ -25,10 +30,11 @@ import (
 func TestIamRolePolicySupplier_Resources(t *testing.T) {
 
 	cases := []struct {
-		test    string
-		dirName string
-		mocks   func(client *mocks.FakeIAM)
-		err     error
+		test      string
+		dirName   string
+		mocks     func(client *mocks.FakeIAM)
+		wantAlert alerter.Alerts
+		err       error
 	}{
 		{
 			test:    "multiples roles without any inline policies",
@@ -60,7 +66,8 @@ func TestIamRolePolicySupplier_Resources(t *testing.T) {
 					mock.Anything,
 				).Return(nil)
 			},
-			err: nil,
+			wantAlert: alerter.Alerts{},
+			err:       nil,
 		},
 		{
 			test:    "iam multiples roles with inline policies",
@@ -121,10 +128,25 @@ func TestIamRolePolicySupplier_Resources(t *testing.T) {
 						return true
 					})).Once().Return(nil)
 			},
-			err: nil,
+			wantAlert: alerter.Alerts{},
+			err:       nil,
+		},
+		{
+			test:    "Cannot list roles",
+			dirName: "iam_role_policy_empty",
+			mocks: func(client *mocks.FakeIAM) {
+				client.On("ListRolesPages",
+					&iam.ListRolesInput{},
+					mock.MatchedBy(func(callback func(res *iam.ListRolesOutput, lastPage bool) bool) bool {
+						return true
+					})).Return(awserr.NewRequestFailure(nil, 403, ""))
+			},
+			wantAlert: alerter.Alerts{"aws_iam_role_policy": []alerter.Alert{alerter.Alert{Message: "Ignoring aws_iam_role_policy from drift calculation: Listing aws_iam_role_policy is forbidden.", ShouldIgnoreResource: true}}},
+			err:       nil,
 		},
 	}
 	for _, c := range cases {
+		alertr := alerter.NewAlerter()
 		shouldUpdate := c.dirName == *goldenfile.Update
 		if shouldUpdate {
 			provider, err := NewTerraFormProvider()
@@ -133,7 +155,7 @@ func TestIamRolePolicySupplier_Resources(t *testing.T) {
 			}
 
 			terraform.AddProvider(terraform.AWS, provider)
-			resource.AddSupplier(NewIamRolePolicySupplier(provider.Runner(), iam.New(provider.session)))
+			resource.AddSupplier(NewIamRolePolicySupplier(provider.Runner(), iam.New(provider.session), alertr))
 		}
 
 		t.Run(c.test, func(tt *testing.T) {
@@ -147,6 +169,7 @@ func TestIamRolePolicySupplier_Resources(t *testing.T) {
 				deserializer,
 				&fakeIam,
 				terraform.NewParallelResourceReader(parallel.NewParallelRunner(context.TODO(), 10)),
+				alertr,
 			}
 			got, err := s.Resources()
 			if c.err != err {
@@ -154,6 +177,7 @@ func TestIamRolePolicySupplier_Resources(t *testing.T) {
 			}
 
 			mock.AssertExpectationsForObjects(tt)
+			assert.Equal(t, c.wantAlert, alertr.Retrieve())
 			test.CtyTestDiff(got, c.dirName, provider, deserializer, shouldUpdate, t)
 		})
 	}

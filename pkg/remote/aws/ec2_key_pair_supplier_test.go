@@ -4,7 +4,12 @@ import (
 	"context"
 	"testing"
 
+	"github.com/aws/aws-sdk-go/aws/awserr"
+	"github.com/stretchr/testify/assert"
+
+	"github.com/cloudskiff/driftctl/pkg/alerter"
 	"github.com/cloudskiff/driftctl/pkg/parallel"
+
 	awsdeserializer "github.com/cloudskiff/driftctl/pkg/resource/aws/deserializer"
 
 	"github.com/cloudskiff/driftctl/test/goldenfile"
@@ -24,25 +29,38 @@ import (
 
 func TestEC2KeyPairSupplier_Resources(t *testing.T) {
 	tests := []struct {
-		test    string
-		dirName string
-		kpNames []string
-		err     error
+		test      string
+		dirName   string
+		kpNames   []string
+		listError error
+		wantAlert alerter.Alerts
+		err       error
 	}{
 		{
-			test:    "no key pairs",
-			dirName: "ec2_key_pair_empty",
-			kpNames: []string{},
-			err:     nil,
+			test:      "no key pairs",
+			dirName:   "ec2_key_pair_empty",
+			kpNames:   []string{},
+			wantAlert: alerter.Alerts{},
+			err:       nil,
 		},
 		{
-			test:    "with key pairs",
-			dirName: "ec2_key_pair_multiple",
-			kpNames: []string{"test", "bar"},
-			err:     nil,
+			test:      "with key pairs",
+			dirName:   "ec2_key_pair_multiple",
+			kpNames:   []string{"test", "bar"},
+			wantAlert: alerter.Alerts{},
+			err:       nil,
+		},
+		{
+			test:      "cannot list key pairs",
+			dirName:   "ec2_key_pair_empty",
+			kpNames:   []string{},
+			listError: awserr.NewRequestFailure(nil, 403, ""),
+			wantAlert: alerter.Alerts{"aws_key_pair": []alerter.Alert{alerter.Alert{Message: "Ignoring aws_key_pair from drift calculation: Listing aws_key_pair is forbidden.", ShouldIgnoreResource: true}}},
+			err:       nil,
 		},
 	}
 	for _, tt := range tests {
+		alertr := alerter.NewAlerter()
 		shouldUpdate := tt.dirName == *goldenfile.Update
 		if shouldUpdate {
 			provider, err := NewTerraFormProvider()
@@ -51,23 +69,29 @@ func TestEC2KeyPairSupplier_Resources(t *testing.T) {
 			}
 
 			terraform.AddProvider(terraform.AWS, provider)
-			resource.AddSupplier(NewEC2KeyPairSupplier(provider.Runner(), ec2.New(provider.session)))
+			resource.AddSupplier(NewEC2KeyPairSupplier(provider.Runner(), ec2.New(provider.session), alertr))
 		}
 
 		t.Run(tt.test, func(t *testing.T) {
 			provider := mocks.NewMockedGoldenTFProvider(tt.dirName, terraform.Provider(terraform.AWS), shouldUpdate)
 			deserializer := awsdeserializer.NewEC2KeyPairDeserializer()
+			client := mocks.NewMockAWSEC2KeyPairClient(tt.kpNames)
+			if tt.listError != nil {
+				client = mocks.NewMockAWSEC2ErrorClient(tt.listError)
+			}
 			s := &EC2KeyPairSupplier{
 				provider,
 				deserializer,
-				mocks.NewMockAWSEC2KeyPairClient(tt.kpNames),
+				client,
 				terraform.NewParallelResourceReader(parallel.NewParallelRunner(context.TODO(), 10)),
+				alertr,
 			}
 			got, err := s.Resources()
 			if tt.err != err {
 				t.Errorf("Expected error %+v got %+v", tt.err, err)
 			}
 
+			assert.Equal(t, tt.wantAlert, alertr.Retrieve())
 			test.CtyTestDiff(got, tt.dirName, provider, deserializer, shouldUpdate, t)
 		})
 	}
