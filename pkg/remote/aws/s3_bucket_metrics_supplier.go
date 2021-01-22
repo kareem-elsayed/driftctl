@@ -3,7 +3,6 @@ package aws
 import (
 	"fmt"
 
-	"github.com/cloudskiff/driftctl/pkg/parallel"
 	awsdeserializer "github.com/cloudskiff/driftctl/pkg/resource/aws/deserializer"
 
 	awssdk "github.com/aws/aws-sdk-go/aws"
@@ -24,8 +23,13 @@ type S3BucketMetricSupplier struct {
 	runner       *terraform.ParallelResourceReader
 }
 
-func NewS3BucketMetricSupplier(runner *parallel.ParallelRunner, factory AwsClientFactoryInterface) *S3BucketMetricSupplier {
-	return &S3BucketMetricSupplier{terraform.Provider(terraform.AWS), awsdeserializer.NewS3BucketMetricDeserializer(), factory, terraform.NewParallelResourceReader(runner)}
+func NewS3BucketMetricSupplier(provider *TerraformProvider, factory AwsClientFactoryInterface) *S3BucketMetricSupplier {
+	return &S3BucketMetricSupplier{
+		provider,
+		awsdeserializer.NewS3BucketMetricDeserializer(),
+		factory,
+		terraform.NewParallelResourceReader(provider.Runner().SubRunner()),
+	}
 }
 
 func (s *S3BucketMetricSupplier) Resources() ([]resource.Resource, error) {

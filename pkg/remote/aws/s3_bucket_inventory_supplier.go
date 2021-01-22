@@ -3,7 +3,6 @@ package aws
 import (
 	"fmt"
 
-	"github.com/cloudskiff/driftctl/pkg/parallel"
 	awsdeserializer "github.com/cloudskiff/driftctl/pkg/resource/aws/deserializer"
 
 	awssdk "github.com/aws/aws-sdk-go/aws"
@@ -24,8 +23,13 @@ type S3BucketInventorySupplier struct {
 	runner       *terraform.ParallelResourceReader
 }
 
-func NewS3BucketInventorySupplier(runner *parallel.ParallelRunner, factory AwsClientFactoryInterface) *S3BucketInventorySupplier {
-	return &S3BucketInventorySupplier{terraform.Provider(terraform.AWS), awsdeserializer.NewS3BucketInventoryDeserializer(), factory, terraform.NewParallelResourceReader(runner)}
+func NewS3BucketInventorySupplier(provider *TerraformProvider, factory AwsClientFactoryInterface) *S3BucketInventorySupplier {
+	return &S3BucketInventorySupplier{
+		provider,
+		awsdeserializer.NewS3BucketInventoryDeserializer(),
+		factory,
+		terraform.NewParallelResourceReader(provider.Runner().SubRunner()),
+	}
 }
 
 func (s *S3BucketInventorySupplier) Resources() ([]resource.Resource, error) {

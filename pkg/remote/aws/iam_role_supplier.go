@@ -3,7 +3,6 @@ package aws
 import (
 	"github.com/aws/aws-sdk-go/service/iam"
 	"github.com/aws/aws-sdk-go/service/iam/iamiface"
-	"github.com/cloudskiff/driftctl/pkg/parallel"
 	"github.com/cloudskiff/driftctl/pkg/remote/deserializer"
 	"github.com/cloudskiff/driftctl/pkg/resource"
 	resourceaws "github.com/cloudskiff/driftctl/pkg/resource/aws"
@@ -30,8 +29,13 @@ type IamRoleSupplier struct {
 	runner       *terraform.ParallelResourceReader
 }
 
-func NewIamRoleSupplier(runner *parallel.ParallelRunner, client iamiface.IAMAPI) *IamRoleSupplier {
-	return &IamRoleSupplier{terraform.Provider(terraform.AWS), awsdeserializer.NewIamRoleDeserializer(), client, terraform.NewParallelResourceReader(runner)}
+func NewIamRoleSupplier(provider *TerraformProvider) *IamRoleSupplier {
+	return &IamRoleSupplier{
+		provider,
+		awsdeserializer.NewIamRoleDeserializer(),
+		iam.New(provider.session),
+		terraform.NewParallelResourceReader(provider.Runner().SubRunner()),
+	}
 }
 
 func awsIamRoleShouldBeIgnored(roleName string) bool {

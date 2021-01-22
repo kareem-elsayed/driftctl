@@ -1,7 +1,6 @@
 package aws
 
 import (
-	"github.com/cloudskiff/driftctl/pkg/parallel"
 	"github.com/cloudskiff/driftctl/pkg/remote/deserializer"
 	"github.com/cloudskiff/driftctl/pkg/resource"
 	resourceaws "github.com/cloudskiff/driftctl/pkg/resource/aws"
@@ -22,8 +21,13 @@ type EC2EipSupplier struct {
 	runner       *terraform.ParallelResourceReader
 }
 
-func NewEC2EipSupplier(runner *parallel.ParallelRunner, client ec2iface.EC2API) *EC2EipSupplier {
-	return &EC2EipSupplier{terraform.Provider(terraform.AWS), awsdeserializer.NewEC2EipDeserializer(), client, terraform.NewParallelResourceReader(runner)}
+func NewEC2EipSupplier(provider *TerraformProvider) *EC2EipSupplier {
+	return &EC2EipSupplier{
+		provider,
+		awsdeserializer.NewEC2EipDeserializer(),
+		ec2.New(provider.session),
+		terraform.NewParallelResourceReader(provider.Runner().SubRunner()),
+	}
 }
 
 func (s EC2EipSupplier) Resources() ([]resource.Resource, error) {

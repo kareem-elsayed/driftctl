@@ -3,7 +3,6 @@ package aws
 import (
 	"github.com/aws/aws-sdk-go/service/iam"
 	"github.com/aws/aws-sdk-go/service/iam/iamiface"
-	"github.com/cloudskiff/driftctl/pkg/parallel"
 	"github.com/cloudskiff/driftctl/pkg/remote/deserializer"
 	"github.com/cloudskiff/driftctl/pkg/resource"
 	resourceaws "github.com/cloudskiff/driftctl/pkg/resource/aws"
@@ -21,8 +20,13 @@ type IamAccessKeySupplier struct {
 	runner       *terraform.ParallelResourceReader
 }
 
-func NewIamAccessKeySupplier(runner *parallel.ParallelRunner, client iamiface.IAMAPI) *IamAccessKeySupplier {
-	return &IamAccessKeySupplier{terraform.Provider(terraform.AWS), awsdeserializer.NewIamAccessKeyDeserializer(), client, terraform.NewParallelResourceReader(runner)}
+func NewIamAccessKeySupplier(provider *TerraformProvider) *IamAccessKeySupplier {
+	return &IamAccessKeySupplier{
+		provider,
+		awsdeserializer.NewIamAccessKeyDeserializer(),
+		iam.New(provider.session),
+		terraform.NewParallelResourceReader(provider.Runner().SubRunner()),
+	}
 }
 
 func (s IamAccessKeySupplier) Resources() ([]resource.Resource, error) {

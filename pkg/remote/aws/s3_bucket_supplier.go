@@ -4,7 +4,6 @@ import (
 	"github.com/aws/aws-sdk-go/aws/awserr"
 	"github.com/aws/aws-sdk-go/service/s3"
 	"github.com/aws/aws-sdk-go/service/s3/s3iface"
-	"github.com/cloudskiff/driftctl/pkg/parallel"
 	"github.com/cloudskiff/driftctl/pkg/remote/deserializer"
 	"github.com/cloudskiff/driftctl/pkg/resource"
 	"github.com/cloudskiff/driftctl/pkg/resource/aws"
@@ -22,8 +21,8 @@ type S3BucketSupplier struct {
 	runner           *terraform.ParallelResourceReader
 }
 
-func NewS3BucketSupplier(runner *parallel.ParallelRunner, factory AwsClientFactoryInterface) *S3BucketSupplier {
-	return &S3BucketSupplier{terraform.Provider(terraform.AWS), awsdeserializer.NewS3BucketDeserializer(), factory, terraform.NewParallelResourceReader(runner)}
+func NewS3BucketSupplier(provider *TerraformProvider, factory AwsClientFactoryInterface) *S3BucketSupplier {
+	return &S3BucketSupplier{provider, awsdeserializer.NewS3BucketDeserializer(), factory, terraform.NewParallelResourceReader(provider.Runner().SubRunner())}
 }
 
 func (s S3BucketSupplier) Resources() ([]resource.Resource, error) {

@@ -3,15 +3,13 @@ package aws
 import (
 	"strings"
 
-	"github.com/cloudskiff/driftctl/pkg/parallel"
+	"github.com/aws/aws-sdk-go/service/route53"
+	"github.com/aws/aws-sdk-go/service/route53/route53iface"
 	"github.com/cloudskiff/driftctl/pkg/remote/deserializer"
 	"github.com/cloudskiff/driftctl/pkg/resource"
 	resourceaws "github.com/cloudskiff/driftctl/pkg/resource/aws"
 	awsdeserializer "github.com/cloudskiff/driftctl/pkg/resource/aws/deserializer"
 	"github.com/cloudskiff/driftctl/pkg/terraform"
-
-	"github.com/aws/aws-sdk-go/service/route53"
-	"github.com/aws/aws-sdk-go/service/route53/route53iface"
 	"github.com/sirupsen/logrus"
 	"github.com/zclconf/go-cty/cty"
 )
@@ -23,8 +21,13 @@ type Route53ZoneSupplier struct {
 	runner       *terraform.ParallelResourceReader
 }
 
-func NewRoute53ZoneSupplier(runner *parallel.ParallelRunner, client route53iface.Route53API) *Route53ZoneSupplier {
-	return &Route53ZoneSupplier{terraform.Provider(terraform.AWS), awsdeserializer.NewRoute53ZoneDeserializer(), client, terraform.NewParallelResourceReader(runner)}
+func NewRoute53ZoneSupplier(provider *TerraformProvider) *Route53ZoneSupplier {
+	return &Route53ZoneSupplier{
+		provider,
+		awsdeserializer.NewRoute53ZoneDeserializer(),
+		route53.New(provider.session),
+		terraform.NewParallelResourceReader(provider.Runner().SubRunner()),
+	}
 }
 
 func listAwsRoute53Zones(client route53iface.Route53API) ([]*route53.HostedZone, error) {
